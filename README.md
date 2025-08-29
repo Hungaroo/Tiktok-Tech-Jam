@@ -76,8 +76,12 @@ The system balances **speed**, **accuracy**, and **scalability** to improve the 
 - (Optional) OpenAI API Key if using GPT-based sentiment  
 
 ### Install Requirements
+```
 pip install --upgrade pip
+```
+```
 pip install -r requirements.txt
+```
 
 
 ## Step to Run Codes Locally
