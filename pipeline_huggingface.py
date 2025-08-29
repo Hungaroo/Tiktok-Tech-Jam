@@ -3,11 +3,15 @@
 """
 pipeline_huggingface.py
 Ensemble / Multi-Task Inference (Hugging Face only, NO training)
-"""
 
+Adds:
+- --lite true      -> uses smaller/faster models
+- --batch_size N   -> batch for zero-shot & sentiment calls (best-effort)
+- --max_rows N     -> cap rows for quick dev
+
+"""
 from __future__ import annotations
 import os
-# >>> Force Transformers to ignore TensorFlow to avoid Keras 3 issues
 os.environ["TRANSFORMERS_NO_TF"] = "1"
 
 import argparse
@@ -18,7 +22,6 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
-# ---- HF imports (error nicely if missing) ----
 try:
     from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 except Exception as e:
@@ -26,7 +29,6 @@ except Exception as e:
         "transformers is required for pipeline_huggingface.py. "
         "Install with: pip install transformers accelerate torch"
     ) from e
-
 
 # =========================
 # Labels / constants
@@ -66,7 +68,6 @@ Do not include extra words.
 Review: "{text}"
 JSON:"""
 
-
 # =========================
 # Rule-based backstop
 # =========================
@@ -86,29 +87,37 @@ def rule_policy_label(text: str) -> str:
     if any(p in t for p in NOT_VISIT): return "rant_without_visit"
     return "clean"
 
-
 # =========================
-# Zero-shot policy via NLI
+# Zero-shot policy via NLI (batched)
 # =========================
 def build_zs_policy_pipeline(model_id: str):
     return pipeline(
         "zero-shot-classification",
         model=model_id,
         device_map="auto",
-        framework="pt",   # <<< force PyTorch
+        framework="pt",
     )
 
-def predict_policy_zero_shot(zs_pipe, texts: List[str]) -> Tuple[List[str], List[Dict[str,float]]]:
+def predict_policy_zero_shot(zs_pipe, texts: List[str], batch_size:int=8) -> Tuple[List[str], List[Dict[str,float]]]:
     preds, scores = [], []
-    for tx in texts:
-        out = zs_pipe(tx, candidate_labels=POLICY_LABELS, multi_label=False)
-        label = out["labels"][0]
-        d = {lab: float(sc) for lab, sc in zip(out["labels"], out["scores"])}
-        d = {lab: d.get(lab, 0.0) for lab in POLICY_LABELS}
-        preds.append(label)
-        scores.append(d)
+    if hasattr(zs_pipe, "batch"):
+        iterator = (texts[i:i+batch_size] for i in range(0, len(texts), batch_size))
+        for chunk in iterator:
+            outs = zs_pipe(chunk, candidate_labels=POLICY_LABELS, multi_label=False)
+            if isinstance(outs, dict): outs = [outs]
+            for out in outs:
+                label = out["labels"][0]
+                d = {lab: float(sc) for lab, sc in zip(out["labels"], out["scores"])}
+                d = {lab: d.get(lab, 0.0) for lab in POLICY_LABELS}
+                preds.append(label); scores.append(d)
+    else:
+        for tx in texts:
+            out = zs_pipe(tx, candidate_labels=POLICY_LABELS, multi_label=False)
+            label = out["labels"][0]
+            d = {lab: float(sc) for lab, sc in zip(out["labels"], out["scores"])}
+            d = {lab: d.get(lab, 0.0) for lab in POLICY_LABELS}
+            preds.append(label); scores.append(d)
     return preds, scores
-
 
 # =========================
 # Few-shot LLM for policy
@@ -123,7 +132,7 @@ def build_generation_pipeline(model_id: str):
         do_sample=False,
         temperature=0.0,
         repetition_penalty=1.05,
-        framework="pt",   # <<< force PyTorch
+        framework="pt",
     )
 
 def _parse_policy_from_text(generated: str) -> Optional[str]:
@@ -145,7 +154,6 @@ def predict_policy_generation(gen_pipe, texts: List[str]) -> List[Optional[str]]
         preds.append(_parse_policy_from_text(out))
     return preds
 
-
 # =========================
 # Optional fine-tuned classifier
 # =========================
@@ -162,10 +170,10 @@ def predict_policy_finetuned(tok, mdl, texts: List[str]) -> Tuple[List[str], Lis
         tokenizer=tok,
         device_map="auto",
         return_all_scores=True,
-        framework="pt",   # <<< force PyTorch
+        framework="pt",
     )
     for tx in texts:
-        out = cls_pipe(tx)[0]  # list of dicts
+        out = cls_pipe(tx)[0]
         label_map = {d["label"].lower(): d["score"] for d in out}
         norm = {k.replace(" ", "_"): v for k, v in label_map.items()}
         scores = [float(norm.get(lab, 0.0)) for lab in POLICY_LABELS]
@@ -173,9 +181,8 @@ def predict_policy_finetuned(tok, mdl, texts: List[str]) -> Tuple[List[str], Lis
         probs.append(scores)
     return preds, probs
 
-
 # =========================
-# Sentiment via HF
+# Sentiment via HF (batched-ish best-effort)
 # =========================
 def build_sentiment_pipeline(model_id: str):
     return pipeline(
@@ -183,26 +190,42 @@ def build_sentiment_pipeline(model_id: str):
         model=model_id,
         device_map="auto",
         return_all_scores=True,
-        framework="pt",   # <<< force PyTorch
+        framework="pt",
     )
 
-def predict_sentiment(sent_pipe, texts: List[str]) -> Tuple[List[str], List[float]]:
+def predict_sentiment(sent_pipe, texts: List[str], batch_size:int=16) -> Tuple[List[str], List[float]]:
     labels, scores = [], []
-    for tx in texts:
-        out = sent_pipe(tx)[0]
-        m = {d["label"].lower(): float(d["score"]) for d in out}
-        if {"negative","neutral","positive"}.issubset(m.keys()):
-            lab = max(["negative","neutral","positive"], key=lambda k: m[k]); sc = m[lab]
-        else:
-            key = max(m.keys(), key=lambda k: m[k])
-            lab = {"label_0":"negative","label_1":"neutral","label_2":"positive"}.get(key, key)
-            sc = m[key]
-        labels.append(lab if lab in {"negative","neutral","positive"} else "neutral")
-        pos = m.get("positive", m.get("label_2", 0.0))
-        neg = m.get("negative", m.get("label_0", 0.0))
-        scores.append(float(pos - neg))
+    if hasattr(sent_pipe, "batch"):
+        iterator = (texts[i:i+batch_size] for i in range(0, len(texts), batch_size))
+        for chunk in iterator:
+            outs = sent_pipe(chunk)
+            for out in outs:
+                m = {d["label"].lower(): float(d["score"]) for d in out}
+                if {"negative","neutral","positive"}.issubset(m.keys()):
+                    lab = max(["negative","neutral","positive"], key=lambda k: m[k]); sc = m[lab]
+                else:
+                    key = max(m.keys(), key=lambda k: m[k])
+                    lab = {"label_0":"negative","label_1":"neutral","label_2":"positive"}.get(key, key)
+                    sc = m[key]
+                labels.append(lab if lab in {"negative","neutral","positive"} else "neutral")
+                pos = m.get("positive", m.get("label_2", 0.0))
+                neg = m.get("negative", m.get("label_0", 0.0))
+                scores.append(float(pos - neg))
+    else:
+        for tx in texts:
+            out = sent_pipe(tx)[0]
+            m = {d["label"].lower(): float(d["score"]) for d in out}
+            if {"negative","neutral","positive"}.issubset(m.keys()):
+                lab = max(["negative","neutral","positive"], key=lambda k: m[k]); sc = m[lab]
+            else:
+                key = max(m.keys(), key=lambda k: m[k])
+                lab = {"label_0":"negative","label_1":"neutral","label_2":"positive"}.get(key, key)
+                sc = m[key]
+            labels.append(lab if lab in {"negative","neutral","positive"} else "neutral")
+            pos = m.get("positive", m.get("label_2", 0.0))
+            neg = m.get("negative", m.get("label_0", 0.0))
+            scores.append(float(pos - neg))
     return labels, scores
-
 
 # =========================
 # Ensembling
@@ -219,7 +242,6 @@ def ensemble_policy(rule_pred, zs_pred, gen_pred, ft_pred, weights: Dict[str, fl
         return "clean"
     return max(votes.items(), key=lambda kv: kv[1])[0]
 
-
 # =========================
 # Public runner
 # =========================
@@ -230,17 +252,24 @@ def run_hf_pipeline(
     gen_model: str = "Qwen/Qwen2.5-7B-Instruct",
     finetuned_policy_ckpt: str = "",
     sentiment_model: str = "cardiffnlp/twitter-roberta-base-sentiment-latest",
-    max_rows: int = 0
+    max_rows: int = 0,
+    batch_size:int = 8,
+    lite: bool = False,
 ) -> dict:
     outdir_p = Path(outdir); outdir_p.mkdir(parents=True, exist_ok=True)
     df = pd.read_csv(input_path)
     if max_rows and max_rows > 0:
         df = df.head(max_rows).copy()
-
     if "text" not in df.columns:
         raise ValueError("Input CSV must contain a 'text' column.")
 
     texts = df["text"].fillna("").astype(str).tolist()
+
+    # Lite models (faster)
+    if lite:
+        policy_zs_model = "typeform/distilbert-base-uncased-mnli"
+        gen_model       = "Qwen/Qwen2.5-0.5B-Instruct"
+        sentiment_model = "distilbert-base-uncased-finetuned-sst-2-english"
 
     # Build components
     zs_pipe  = build_zs_policy_pipeline(policy_zs_model)
@@ -253,12 +282,12 @@ def run_hf_pipeline(
 
     # Inference
     rule_preds = [rule_policy_label(t) for t in texts]
-    zs_preds, _   = predict_policy_zero_shot(zs_pipe, texts)
+    zs_preds, _   = predict_policy_zero_shot(zs_pipe, texts, batch_size=batch_size)
     gen_preds     = predict_policy_generation(gen_pipe, texts)
     ft_preds      = []
     if tok and mdl:
         ft_preds, _ = predict_policy_finetuned(tok, mdl, texts)
-    sent_labels, sent_scores = predict_sentiment(sent_pipe, texts)
+    sent_labels, sent_scores = predict_sentiment(sent_pipe, texts, batch_size=max(8, batch_size))
 
     # Ensemble
     ensemble_preds = []
@@ -269,7 +298,7 @@ def run_hf_pipeline(
         ftp = ft_preds[i] if i < len(ft_preds) else None
         ensemble_preds.append(ensemble_policy(rp, zp, gp, ftp))
 
-    # Attach + optional quick eval
+    # Attach + optional eval skeleton
     df_out = df.copy()
     df_out["policy_rule"]      = rule_preds
     df_out["policy_zero_shot"] = zs_preds
@@ -301,7 +330,6 @@ def run_hf_pipeline(
 
     return {"df": df_out, "out_csv": str(out_csv), "out_json": str(out_json)}
 
-
 # =========================
 # CLI
 # =========================
@@ -314,6 +342,8 @@ def _cli():
     ap.add_argument("--finetuned_policy_ckpt", type=str, default="")
     ap.add_argument("--sentiment_model", type=str, default="cardiffnlp/twitter-roberta-base-sentiment-latest")
     ap.add_argument("--max_rows", type=int, default=0)
+    ap.add_argument("--batch_size", type=int, default=8)
+    ap.add_argument("--lite", action="store_true")
     args = ap.parse_args()
 
     res = run_hf_pipeline(
@@ -324,6 +354,8 @@ def _cli():
         finetuned_policy_ckpt=args.finetuned_policy_ckpt,
         sentiment_model=args.sentiment_model,
         max_rows=args.max_rows,
+        batch_size=args.batch_size,
+        lite=args.lite,
     )
 
     print("✅ Saved:")

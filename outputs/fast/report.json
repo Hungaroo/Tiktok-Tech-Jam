@@ -1,0 +1,11 @@
+{
+  "dataset_rows": 1100,
+  "model_trained": false,
+  "classes_seen": [
+    "advertisement",
+    "clean",
+    "rant_without_visit",
+    "self_promotion",
+    "spam_or_lowinfo"
+  ]
+}
