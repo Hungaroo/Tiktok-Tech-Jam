@@ -82,7 +82,7 @@ pip install -r requirements.txt
 
 ## Step to Run Codes Locally
 ```
-python util.py --input reviews.csv --outdir outputs
+python util.py --input reviews.csv --outdir outputs --run_base false --run_hf false --run_fast_clf true --fast_min_df 5 --fast_max_df 0.9
 ```
 
 ## Tech Stack
