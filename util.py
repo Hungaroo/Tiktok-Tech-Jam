@@ -6,53 +6,98 @@ util.py
 Runs:
 - Base pipeline (pipeline.py): preprocess + features + sentiment + rule policy
 - HF ensemble (pipeline_huggingface.py): zero-shot + few-shot + (optional ft) + ensemble
-- FAST CLASSIFIER (new): TF-IDF + LinearSVC trained on rule-based weak labels
-    -> Saves predictions, precision/recall/F1, confusion matrix (CSV/PNG), report.json
-
-Usage examples:
-  # Run all three and save into ./outputs
-  python util.py --input reviews.csv --outdir outputs
-
-  # Base only (skip HF + fast)
-  python util.py --input reviews.csv --outdir outputs --run_hf false --run_fast_clf false
-
-  # HF only (skip base + fast), with lite models & smaller batch:
-  python util.py --input reviews.csv --outdir outputs --run_base false --run_fast_clf false \
-      --lite true --batch_size 8 --max_rows 500
-
-  # FAST only (skip base + HF)
-  python util.py --input reviews.csv --outdir outputs --run_base false --run_hf false --run_fast_clf true
+- FAST CLASSIFIER: TF-IDF + LinearSVC trained on rule-based weak labels
+    -> Saves predictions to CSV
+    -> If ground truth exists, saves ONE PNG confusion matrix based on the TRAINED MODEL ONLY
+       (policy_fast_ml vs ground truth) with overall Accuracy, Macro-Precision/Recall/F1 in the title.
 """
 from __future__ import annotations
-import argparse, json
+import argparse
 from pathlib import Path
 import pandas as pd
 import numpy as np
 
 # Import your modules (same folder)
 import pipeline as base
-import pipeline_huggingface as hf
+import classifier as hf
 
 # Fast ML
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.svm import LinearSVC
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 import joblib
+
+# Plotting (non-interactive backend)
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-def _save_confusion_matrix_png(cm, labels, out_png: Path, title: str):
-    fig, ax = plt.subplots()
-    im = ax.imshow(cm)
-    ax.set_xticks(range(len(labels))); ax.set_yticks(range(len(labels)))
-    ax.set_xticklabels(labels, rotation=45, ha="right"); ax.set_yticklabels(labels)
-    ax.set_xlabel("Predicted"); ax.set_ylabel("True"); ax.set_title(title)
-    for i in range(len(labels)):
-        for j in range(len(labels)):
-            ax.text(j, i, str(cm[i, j]), ha="center", va="center")
-    fig.tight_layout(); fig.savefig(out_png, dpi=160); plt.close(fig)
 
+# ----------------------------
+# Helpers
+# ----------------------------
+def _print_header(s: str):
+    bar = "─" * max(8, len(s))
+    print(f"\n{bar}\n{s}\n{bar}")
+
+def _save_confusion_overall_png(y_true, y_pred, labels, out_png: Path, normalize: bool = True, hide_labels: bool = False):
+    """
+    Save ONE PNG with the confusion matrix (counts or row-normalized) and overall metrics in the title.
+    Overall metrics only: Accuracy, Macro-Precision, Macro-Recall, Macro-F1.
+    """
+    cm = confusion_matrix(y_true, y_pred, labels=labels).astype(float)
+    acc = accuracy_score(y_true, y_pred)
+    rep = classification_report(y_true, y_pred, labels=labels, zero_division=0, output_dict=True)
+    macro_p = rep["macro avg"]["precision"]
+    macro_r = rep["macro avg"]["recall"]
+    macro_f1 = rep["macro avg"]["f1-score"]
+
+    disp = cm.copy()
+    if normalize:
+        row_sums = disp.sum(axis=1, keepdims=True)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            disp = np.divide(disp, row_sums, where=row_sums != 0)
+        disp[np.isnan(disp)] = 0.0
+
+    # Figure sizing
+    n = max(6, min(len(labels), 20))
+    fig_w = min(14, max(6, n * 0.6))
+    fig_h = min(12, max(5, n * 0.6))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    im = ax.imshow(disp)
+    if not hide_labels:
+        ax.set_xticks(range(len(labels))); ax.set_yticks(range(len(labels)))
+        ax.set_xticklabels(labels, rotation=45, ha="right"); ax.set_yticklabels(labels)
+    else:
+        ax.set_xticks([]); ax.set_yticks([])
+
+    ax.set_xlabel("Predicted (trained model)")
+    ax.set_ylabel("True")
+    title = f"Confusion Matrix (Trained TF-IDF+LinearSVC) | Acc={acc:.4f}  Macro P/R/F1=({macro_p:.3f}/{macro_r:.3f}/{macro_f1:.3f})"
+    if normalize: title += " [normalized]"
+    ax.set_title(title)
+
+    # Only overall metrics; no per-class text files.
+    if len(labels) <= 20:  # keep readable
+        for i in range(disp.shape[0]):
+            for j in range(disp.shape[1]):
+                txt = f"{disp[i, j]:.2f}" if normalize else f"{int(disp[i, j])}"
+                ax.text(j, i, txt, ha="center", va="center", fontsize=8)
+
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=180)
+    plt.close(fig)
+
+    print(f"\n✅ Saved confusion matrix (trained model): {out_png}")
+    print(f"   Accuracy={acc:.6f}  Macro-Precision={macro_p:.6f}  Macro-Recall={macro_r:.6f}  Macro-F1={macro_f1:.6f}")
+
+
+# ----------------------------
+# Base pipeline (no training)
+# ----------------------------
 def run_base_pipeline(
     input_path: str,
     outdir: str,
@@ -83,6 +128,10 @@ def run_base_pipeline(
     print(df[["text","sentiment_label","sentiment_score","policy_category"]].head(5).to_string(index=False))
     return str(out_csv)
 
+
+# ----------------------------
+# HF ensemble (inference only)
+# ----------------------------
 def run_hf_pipeline(
     input_path: str,
     outdir: str,
@@ -110,20 +159,26 @@ def run_hf_pipeline(
     print(f"✅ HF pipeline saved: {res['out_csv']}")
     return str(res["out_csv"])
 
+
+# ----------------------------
+# FAST classifier (trains TF-IDF + LinearSVC)
+# ----------------------------
 def run_fast_classifier(
     input_path: str,
     outdir: str,
     retrain: bool = False,
     min_df: int = 2,
     max_df: float = 0.95,
+    gt_col: str = "policy_gt",
+    hide_labels: bool = True,   # hide class names on the matrix image if you want "overall only" visual
 ) -> str:
     """
-    Ultra-fast classical ML model development:
-      - uses base.preprocess + base.feature_engineering
-      - uses base.apply_llm_sentiment(provider='none') for instant sentiment
-      - uses base.assign_policy_category for weak labels
-      - trains TF-IDF + LinearSVC to predict policy categories (incl. relevancy via "irrelevant")
-      - saves metrics (if policy_gt exists), confusion matrix CSV/PNG, and report.json
+    Classical ML:
+      - preprocess + features
+      - sentiment (provider='none')
+      - rule-based weak labels (for training)
+      - TF-IDF + LinearSVC training
+      - Evaluate TRAINED MODEL ONLY (policy_fast_ml vs ground truth) -> ONE PNG with overall metrics
     """
     outdir_p = Path(outdir) / "fast"
     outdir_p.mkdir(parents=True, exist_ok=True)
@@ -132,7 +187,7 @@ def run_fast_classifier(
     df = base.preprocess(df)
     df = base.feature_engineering(df)
     df = base.apply_llm_sentiment(df, provider="none")
-    df = base.assign_policy_category(df, require_english=False)
+    df = base.assign_policy_category(df, require_english=False)  # weak labels for training
 
     model_dir = outdir_p / "model_joblib"
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -144,60 +199,55 @@ def run_fast_classifier(
             if p.exists(): p.unlink()
 
     if vpath.exists() and mpath.exists():
-        vec = joblib.load(vpath); clf = joblib.load(mpath); trained = False
+        vec = joblib.load(vpath); clf = joblib.load(mpath)
     else:
-        y = df["policy_category"].astype(str).fillna("clean").values
+        y_weak = df["policy_category"].astype(str).fillna("clean").values
         X_texts = df["text"].fillna("").astype(str).values
         vec = TfidfVectorizer(ngram_range=(1,2), min_df=min_df, max_df=max_df)
         X = vec.fit_transform(X_texts)
         clf = LinearSVC()
-        clf.fit(X, y)
+        clf.fit(X, y_weak)
         joblib.dump(vec, vpath); joblib.dump(clf, mpath)
-        trained = True
 
-    # Predict whole dataset
+    # Predict over the entire dataset USING TRAINED MODEL
     X_all = vec.transform(df["text"].fillna("").astype(str).values)
-    df["policy_fast_ml"] = clf.predict(X_all)
+    df["policy_fast_ml"] = clf.predict(X_all)  # trained model predictions
 
-    # Simple ensemble: prefer ML if rule == spam_or_lowinfo (rules may over-flag)
-    def choose(rule, ml):
-        if rule == "spam_or_lowinfo": return ml
-        return ml if ml != "clean" else rule
-    df["policy_final_fast"] = [choose(r, m) for r, m in zip(df["policy_category"], df["policy_fast_ml"])]
-
-    # Metrics
-    report = {
-        "dataset_rows": int(len(df)),
-        "model_trained": bool(trained),
-        "classes_seen": sorted(list(set(df["policy_category"].astype(str)))),
-    }
-    if "policy_gt" in df.columns:
-        y_true = df["policy_gt"].astype(str).values
-        y_pred = df["policy_final_fast"].astype(str).values
-        labels = sorted(list(set(y_true) | set(y_pred)))
-        clf_rep = classification_report(y_true, y_pred, labels=labels, zero_division=0, output_dict=True)
-        report["policy_metrics"] = clf_rep
-        cm = confusion_matrix(y_true, y_pred, labels=labels)
-        pd.DataFrame(cm, index=labels, columns=labels).to_csv(outdir_p / "confusion_matrix_policy.csv")
-        _save_confusion_matrix_png(cm, labels, outdir_p / "confusion_matrix_policy.png", "Policy Confusion Matrix")
-    if "sentiment_gt" in df.columns:
-        ys_true = df["sentiment_gt"].astype(str).values
-        ys_pred = df["sentiment_label"].astype(str).values
-        labs = sorted(list(set(ys_true) | set(ys_pred)))
-        srep = classification_report(ys_true, ys_pred, labels=labs, zero_division=0, output_dict=True)
-        report["sentiment_metrics"] = srep
-
-    (outdir_p / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    # Save predictions CSV (for reference)
     out_csv = outdir_p / "fast_reviews.csv"
     df.to_csv(out_csv, index=False)
+    print(f"\n✅ FAST classifier predictions saved: {out_csv}")
 
-    print(f"✅ FAST classifier saved: {out_csv}")
-    if "policy_gt" in df.columns:
-        print("✅ FAST metrics saved:", outdir_p / "report.json")
-        print("✅ Confusion matrix CSV/PNG saved in:", outdir_p)
-    print(df[["text","sentiment_label","sentiment_score","policy_category","policy_fast_ml","policy_final_fast"]].head(8).to_string(index=False))
+    # --- EVALUATE TRAINED MODEL ONLY ---
+    # Resolve ground-truth column (case-insensitive)
+    col_map = {c.strip().lower(): c for c in df.columns}
+    wanted = gt_col.strip().lower()
+    if wanted in col_map:
+        gt_name = col_map[wanted]
+        y_true = df[gt_name].astype(str).fillna("NA").values
+        y_pred = df["policy_fast_ml"].astype(str).fillna("NA").values  # trained model only
+        labels = sorted(list(set(y_true) | set(y_pred)))
+        out_png = outdir_p / "confusion_matrix_trained.png"
+        _save_confusion_overall_png(y_true, y_pred, labels, out_png, normalize=True, hide_labels=hide_labels)
+    else:
+        _print_header("Ground-truth column not found")
+        print(f"Looked for column '{gt_col}'.")
+        print("Available columns:", list(df.columns))
+        print("\n➡ Fix options:")
+        print(f"  • Rename your GT column to '{gt_col}', OR")
+        print("  • Re-run with your column name, e.g.:")
+        print("    python util.py --input reviews.csv --outdir outputs "
+              "--run_base false --run_hf false --run_fast_clf true "
+              "--gt_col label")
+
+    # Small preview
+    print(df[["text","policy_category","policy_fast_ml"]].head(8).to_string(index=False))
     return str(out_csv)
 
+
+# ----------------------------
+# CLI
+# ----------------------------
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", type=str, default="reviews.csv", help="Input CSV path")
@@ -228,6 +278,8 @@ def main():
     ap.add_argument("--retrain_fast", action="store_true")
     ap.add_argument("--fast_min_df", type=int, default=2)
     ap.add_argument("--fast_max_df", type=float, default=0.95)
+    ap.add_argument("--gt_col", type=str, default="policy_gt", help="Ground-truth column name (default: policy_gt)")
+    ap.add_argument("--show_labels", action="store_true", help="Show class names on the matrix axes")
 
     args = ap.parse_args()
     def _to_bool(s: str) -> bool: return str(s).strip().lower() in {"1","true","t","yes","y"}
@@ -263,9 +315,12 @@ def main():
             retrain=args.retrain_fast,
             min_df=args.fast_min_df,
             max_df=args.fast_max_df,
+            gt_col=args.gt_col,
+            hide_labels=not args.show_labels,
         )
 
     print("\n🎉 Done.")
+
 
 if __name__ == "__main__":
     main()
