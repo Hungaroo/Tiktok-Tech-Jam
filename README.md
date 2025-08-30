@@ -153,7 +153,7 @@ While our reporting focuses on overall metrics, the run also logged per-class st
 - [![joblib](https://img.shields.io/badge/joblib-6DB33F.svg?style=for-the-badge&logo=python&logoColor=white)](https://joblib.readthedocs.io/) – model persistence (save/load trained classifier)
 
 #### NLP & Transformers (Optional HF Path)
-- [![Hugging Face](https://img.shields.io/badge/HuggingFace-FFD21E.svg?style=for-the-badge&logo=huggingface&logoColor=black)](https://huggingface.co/) – zero-shot, few-shot, and optional fine-tuned classification  
+
 - [![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C.svg?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org/) – deep learning backend required by Hugging Face models  
 - [![langdetect](https://img.shields.io/badge/langdetect-4B8BBE.svg?style=for-the-badge&logo=python&logoColor=white)](https://pypi.org/project/langdetect/) – lightweight language detection for rule enforcement
 
