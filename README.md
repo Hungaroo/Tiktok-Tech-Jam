@@ -13,6 +13,13 @@
   - [Install Requirements](#install-requirements)
 - [Step to Run Codes Locally](#step-to-run-codes-locally)
 - [Pipeline Options](#pipeline-options)
+- [Evaluation & Reporting](#evaluation--reporting)
+  - [Summary of findings and recommendations](#summary-of-findings-and-recommendations)
+  - [What was evaluated (scope)](#what-was-evaluated-scope)
+  - [Overall metrics (proxy: model vs rule labels)](#overall-metrics-proxy-model-vs-rule-labels)
+  - [Class-level signals (for debugging only)](#class-level-signals-for-debugging-only)
+  - [How to reproduce this exact evaluation](#how-to-reproduce-this-exact-evaluation)
+  - [Recommendations](#recommendations)
 - [Tech Stack](#tech-stack)
 
 ---
@@ -55,7 +62,7 @@ The system balances **speed**, **accuracy**, and **scalability** to improve the 
 
 4. **Fast Classifier (TF-IDF + LinearSVC)**  
    - Learns from weak rule-based labels  
-   - Produces `policy_final_fast` predictions quickly  
+   - Produces `policy_fast_ml` (trained model) and `policy_final_fast` (simple ensemble) predictions quickly  
 
 5. **Hugging Face Ensemble (Optional)**  
    - Zero-shot classification (`facebook/bart-large-mnli` or lite `distilbert`)  
@@ -65,8 +72,8 @@ The system balances **speed**, **accuracy**, and **scalability** to improve the 
 
 6. **Evaluation & Reporting**  
    - Precision, recall, F1-score (if `policy_gt` / `sentiment_gt` columns exist)  
-   - Confusion matrix (CSV + PNG)  
-   - JSON summary of dataset metrics  
+   - Confusion matrix PNG (generated when ground-truth labels are provided)  
+   - JSON summary of dataset metrics
 
 ---
 
@@ -77,16 +84,68 @@ The system balances **speed**, **accuracy**, and **scalability** to improve the 
 - (Optional) OpenAI API Key if using GPT-based sentiment  
 
 ### Install Requirements
-```
+```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-
 ## Step to Run Codes Locally
+```bash
+python util.py --input reviews.csv --outdir outputs --run_base false --run_hf false --run_fast_clf true --fast_min_df 5 --fast_max_df 0.9
 ```
-python util.py --input reviews.csv --outdir outputs
+---
+
+## Evaluation & Reporting 
+### Summary of findings and recommendations
+This section documents **exactly what was run and measured** in the latest evaluation artifact in this repo.
+
+### What was evaluated (scope)
+- **Model path:** the **Fast Classifier** (TF-IDF + LinearSVC) trained on **rule-based weak labels**.
+- **Evaluation type:** **proxy evaluation** — the trained model’s predictions were compared **against the rule-based labels**, not human ground truth (no `policy_gt` column was present in this run).
+- **Dataset size:** `1,100` rows.
+- **Classes encountered:** `advertisement`, `clean`, `rant_without_visit`, `self_promotion`, `spam_or_lowinfo`.
+- **Training status for this run:** `model_trained: false` (an existing fitted model was used; no re-training occurred during this run).
+
+### Overall metrics (proxy: model vs rule labels)
+These are **overall** (not per-class) metrics reported by the run:
+
+- **Accuracy:** `0.9845454545`  
+- **Macro Precision:** `0.9867036525`  
+- **Macro Recall:** `0.9326535790`  
+- **Macro F1:** `0.9571548543`
+
+(Weighted averages for reference: Precision `0.9843108812`, Recall `0.9845454545`, F1 `0.9838502462`.)
+
+> Because this is a **proxy** check (model vs rules), treat these as alignment with the rule system, **not** true real-world accuracy.
+
+### Class-level signals (for debugging only)
+While our reporting focuses on overall metrics, the run also logged per-class stats that explain where the proxy disagreement is concentrated:
+
+| class               | precision | recall  | f1       | support |
+|---------------------|-----------|---------|----------|---------|
+| advertisement       | 1.0000    | 0.8824  | 0.9375   | 17      |
+| clean               | 0.9845    | 0.9976  | 0.9910   | 827     |
+| rant_without_visit  | 1.0000    | 1.0000  | 1.0000   | 1       |
+| self_promotion      | 0.9898    | 1.0000  | 0.9949   | 195     |
+| spam_or_lowinfo     | 0.9592    | 0.7833  | 0.8624   | 60      |
+
+> The **lowest proxy recall** is in `spam_or_lowinfo` (≈ 0.78), followed by `advertisement` (≈ 0.88). This indicates the trained model most often diverges from the rule system on these two categories.
+
+### How to reproduce this exact evaluation
+Run the **Fast Classifier** path without a ground-truth column to regenerate the same type of proxy metrics recorded in the report:
+```bash
+python util.py   --input reviews.csv   --outdir outputs   --run_base false   --run_hf false   --run_fast_clf true
 ```
+- The above command trains/loads the fast classifier using **rule-based labels** and writes metrics to `outputs/fast/report.json`.  
+- A confusion matrix PNG is produced **only when** a ground-truth column (e.g., `policy_gt`) is supplied.
+
+### Recommendations
+- **Switch from proxy to true evaluation.** Add a human ground-truth column (e.g., `policy_gt`) and re-run to measure **actual** model performance rather than rule alignment.
+- **Retrain the fast classifier on this dataset snapshot.** The report shows `model_trained: false`; re-run with `--retrain_fast` so results reflect the latest data distribution.
+- **Prioritize recall improvements where disagreement is highest.** Focus on `spam_or_lowinfo` (recall ≈ 0.7833) and `advertisement` (recall ≈ 0.8824) first.
+- **Address class imbalance before the next training pass.** `clean` dominates (827 items) while `advertisement` (17) and `rant_without_visit` (1) are scarce; collect more labeled samples or use class weighting/sampling.
+
+---
 
 ## Tech Stack
 
