@@ -12,6 +12,7 @@
   - [Prerequisites](#prerequisites)
   - [Install Requirements](#install-requirements)
 - [Step to Run Codes Locally](#step-to-run-codes-locally)
+- [Pipeline Options](#pipeline-options)
 - [Tech Stack](#tech-stack)
 
 ---
@@ -29,12 +30,12 @@
 ## Project Overview
 Online reviews significantly influence user perception of local businesses, but irrelevant, misleading, or spammy reviews reduce trust.  
 
-This project develops an **end-to-end ML pipeline** to automatically evaluate review **quality** and **relevancy**, enforcing policy categories such as **advertisement**, **irrelevant content**, **rant without visit**, and **clean**.  
+This project develops an **end-to-end ML pipeline** to automatically evaluate review **quality**, **relevancy**, and **sentiment**, enforcing policy categories such as **advertisement**, **irrelevant content**, **rant without visit**, and **clean**.  
 
 We provide three complementary pipelines:  
-1. **Base pipeline**: preprocessing, feature engineering, rule-based policies  
+1. **Base pipeline**: preprocessing, feature engineering, sentiment (OpenAI/HF/lexicon), and rule-based policy detection  
 2. **Fast classifier**: TF-IDF + LinearSVC (trained on weak labels)  
-3. **HF Ensemble (optional)**: zero-shot NLI + few-shot LLM + sentiment models  
+3. **Hugging Face Ensemble (optional)**: zero-shot NLI, few-shot LLM, optional fine-tuned classifier, and ensemble policy prediction  
 
 The system balances **speed**, **accuracy**, and **scalability** to improve the reliability of location-based reviews.
 
@@ -57,7 +58,7 @@ The system balances **speed**, **accuracy**, and **scalability** to improve the 
    - Produces `policy_final_fast` predictions quickly  
 
 5. **Hugging Face Ensemble (Optional)**  
-   - Zero-shot (`facebook/bart-large-mnli` or lite `distilbert` variant)  
+   - Zero-shot classification (`facebook/bart-large-mnli` or lite `distilbert`)  
    - Few-shot generation (`Qwen` models)  
    - Optional fine-tuned classifier  
    - HF-based sentiment classification  
@@ -76,8 +77,10 @@ The system balances **speed**, **accuracy**, and **scalability** to improve the 
 - (Optional) OpenAI API Key if using GPT-based sentiment  
 
 ### Install Requirements
+```
 pip install --upgrade pip
 pip install -r requirements.txt
+```
 
 
 ## Step to Run Codes Locally
@@ -88,8 +91,7 @@ python util.py --input reviews.csv --outdir outputs
 ## Tech Stack
 
 #### Core Language
-- [![Python](https://img.shields.io/badge/Python%203.9+-3776AB.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)  
-Main language for data pipelines and orchestration.
+- [![Python](https://img.shields.io/badge/Python%203.9+-3776AB.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/) - Main language for data pipelines and orchestration.
 
 #### Data Processing
 - [![pandas](https://img.shields.io/badge/pandas-150458.svg?style=for-the-badge&logo=pandas&logoColor=white)](https://pandas.pydata.org/) – CSV reading, dataframe manipulation, saving outputs  
@@ -103,11 +105,6 @@ Main language for data pipelines and orchestration.
 - [![Hugging Face](https://img.shields.io/badge/HuggingFace-FFD21E.svg?style=for-the-badge&logo=huggingface&logoColor=black)](https://huggingface.co/) – zero-shot, few-shot, and optional fine-tuned classification  
 - [![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C.svg?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org/) – deep learning backend required by Hugging Face models  
 - [![langdetect](https://img.shields.io/badge/langdetect-4B8BBE.svg?style=for-the-badge&logo=python&logoColor=white)](https://pypi.org/project/langdetect/) – lightweight language detection for rule enforcement
-
-#### Sentiment Analysis
-- Lexicon fallback – fast rule-based sentiment when `provider=none`  
-- Hugging Face sentiment model – [cardiffnlp/twitter-roberta-base-sentiment-latest](https://huggingface.co/cardiffnlp/twitter-roberta-base-sentiment-latest) when `provider=hf`  
-- [![OpenAI](https://img.shields.io/badge/OpenAI-412991.svg?style=for-the-badge&logo=openai&logoColor=white)](https://openai.com/) – `gpt-4o-mini` when `provider=openai`
 
 #### Visualization & Reporting
 - [![matplotlib](https://img.shields.io/badge/matplotlib-0C55A5.svg?style=for-the-badge&logo=plotly&logoColor=white)](https://matplotlib.org/) – confusion matrices (PNG)  
