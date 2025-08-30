@@ -86,6 +86,8 @@ The system balances **speed**, **accuracy**, and **scalability** to improve the 
 ### Install Requirements
 ```bash
 pip install --upgrade pip
+```
+```
 pip install -r requirements.txt
 ```
 
@@ -93,8 +95,6 @@ pip install -r requirements.txt
 ```bash
 python util.py --input reviews.csv --outdir outputs --run_base false --run_hf false --run_fast_clf true --fast_min_df 5 --fast_max_df 0.9
 ```
----
-
 ## Evaluation & Reporting 
 ### Summary of findings and recommendations
 This section documents **exactly what was run and measured** in the latest evaluation artifact in this repo.
@@ -130,15 +130,7 @@ While our reporting focuses on overall metrics, the run also logged per-class st
 | spam_or_lowinfo     | 0.9592    | 0.7833  | 0.8624   | 60      |
 
 > The **lowest proxy recall** is in `spam_or_lowinfo` (≈ 0.78), followed by `advertisement` (≈ 0.88). This indicates the trained model most often diverges from the rule system on these two categories.
-
-### How to reproduce this exact evaluation
-Run the **Fast Classifier** path without a ground-truth column to regenerate the same type of proxy metrics recorded in the report:
-```bash
-python util.py   --input reviews.csv   --outdir outputs   --run_base false   --run_hf false   --run_fast_clf true
-```
-- The above command trains/loads the fast classifier using **rule-based labels** and writes metrics to `outputs/fast/report.json`.  
-- A confusion matrix PNG is produced **only when** a ground-truth column (e.g., `policy_gt`) is supplied.
-
+> 
 ### Recommendations
 - **Switch from proxy to true evaluation.** Add a human ground-truth column (e.g., `policy_gt`) and re-run to measure **actual** model performance rather than rule alignment.
 - **Retrain the fast classifier on this dataset snapshot.** The report shows `model_trained: false`; re-run with `--retrain_fast` so results reflect the latest data distribution.
